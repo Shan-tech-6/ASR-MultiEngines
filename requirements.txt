@@ -15,3 +15,5 @@ openpyxl
 reportlab
 librosa
 soundfile
+torchvision
+torchaudio
