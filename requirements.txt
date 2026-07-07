@@ -1,0 +1,17 @@
+streamlit>=1.32
+streamlit-mic-recorder
+numpy
+pandas
+openai-whisper
+faster-whisper
+requests
+google-generativeai
+transformers
+torch
+jiwer
+gTTS
+plotly
+openpyxl
+reportlab
+librosa
+soundfile
