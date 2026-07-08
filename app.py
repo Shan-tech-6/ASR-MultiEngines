@@ -111,24 +111,36 @@ except Exception:
     SOUNDFILE_AVAILABLE = False
 
 try:
-    from transformers import pipeline as hf_pipeline, AutoProcessor, SeamlessM4Tv2Model
+    from transformers import AutoProcessor, SeamlessM4Tv2Model, Wav2Vec2Processor, Wav2Vec2ForCTC
     import torch
     TRANSFORMERS_AVAILABLE = True
 except Exception:
     TRANSFORMERS_AVAILABLE = False
-
-try:
-    import torchaudio
-    TORCHAUDIO_AVAILABLE = True
-except Exception:
-    TORCHAUDIO_AVAILABLE = False
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════════════
 SARVAM_API_URL     = "https://api.sarvam.ai/speech-to-text"
-WAV2VEC2_MODEL_ID  = "voidful/wav2vec2-xlsr-multilingual-56"
+WAV2VEC2_BASE_ID   = "facebook/wav2vec2-large-xlsr-53"  # pretrained backbone (no CTC head)
+# facebook/wav2vec2-large-xlsr-53 ships with NO vocabulary/CTC head of its own —
+# HuggingFace's own model card says it "should be fine-tuned on a downstream task"
+# before it can transcribe anything. These are verified, publicly available
+# fine-tunes of that exact checkpoint (from the HF "XLSR Fine-Tuning Week"),
+# each adding just a CTC head + tokenizer on top of the same XLSR-53 backbone.
+WAV2VEC2_LANG_MODEL_MAP = {
+    "en": "jonatasgrosman/wav2vec2-large-xlsr-53-english",
+    "hi": "theainerd/Wav2Vec2-large-xlsr-hindi",
+    "fr": "jonatasgrosman/wav2vec2-large-xlsr-53-french",
+    "de": "jonatasgrosman/wav2vec2-large-xlsr-53-german",
+    "es": "jonatasgrosman/wav2vec2-large-xlsr-53-spanish",
+    "ru": "jonatasgrosman/wav2vec2-large-xlsr-53-russian",
+    "ar": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
+    "ja": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
+    "zh": "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn",
+    "pt": "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese",
+}
+WAV2VEC2_DEFAULT_MODEL = WAV2VEC2_LANG_MODEL_MAP["en"]
 SEAMLESS_MODEL_ID  = "facebook/seamless-m4t-v2-large"
 SARVAM_MAX_SECS    = 30.0
 LOG_FILE           = "asr_lab_pro_logs.xlsx"
@@ -364,17 +376,42 @@ def get_faster_whisper_model(size: str):
     return FWModel(size, device="cpu", compute_type="int8")
 
 
-@st.cache_resource(show_spinner="⏳ Loading Wav2Vec2-XLSR-53 (voidful/wav2vec2-xlsr-multilingual-56)…")
-def get_wav2vec2_pipeline():
-    return hf_pipeline("automatic-speech-recognition", model=WAV2VEC2_MODEL_ID, device="cpu")
+@st.cache_resource(show_spinner="⏳ Loading Wav2Vec2-XLSR-53 checkpoint…")
+def get_wav2vec2_model(model_id: str):
+    """
+    Loads the processor+model directly (no transformers.pipeline wrapper).
+    The high-level ASR pipeline probes for an optional torchcodec backend even
+    when given a raw array, and on some machines torchcodec is present but its
+    native `libtorchcodec` binary fails to load — this direct path never touches
+    torchcodec at all.
+    """
+    processor = Wav2Vec2Processor.from_pretrained(model_id)
+    model     = Wav2Vec2ForCTC.from_pretrained(model_id)
+    model.eval()
+    return processor, model
 
 
 @st.cache_resource(show_spinner="⏳ Loading SeamlessM4T-v2-Large (facebook/seamless-m4t-v2-large)… this can take a while on first run")
 def get_seamless_m4t_v2():
-    processor = AutoProcessor.from_pretrained(SEAMLESS_MODEL_ID)
-    model     = SeamlessM4Tv2Model.from_pretrained(SEAMLESS_MODEL_ID)
-    model.eval()
-    return processor, model
+    """
+    Loads processor+model, self-healing against a corrupted/partially-downloaded
+    local cache (e.g. an interrupted download of this ~9GB checkpoint leaving a
+    truncated tokenizer.model). On the first failure we retry once with
+    force_download=True to pull a clean copy before giving up.
+    """
+    last_err = None
+    for force in (False, True):
+        try:
+            processor = AutoProcessor.from_pretrained(SEAMLESS_MODEL_ID, force_download=force)
+            model     = SeamlessM4Tv2Model.from_pretrained(SEAMLESS_MODEL_ID, force_download=force)
+            model.eval()
+            return processor, model
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(
+        "Failed to load SeamlessM4T-v2-Large even after a forced re-download "
+        f"(possibly a version mismatch in sentencepiece/protobuf): {last_err}"
+    )
 
 
 def _load_audio_array(path: str, target_sr: int = TARGET_SR):
@@ -476,53 +513,47 @@ def run_sarvam(path: str, duration: float, api_key: str, lang: str) -> EngineRes
 
 def run_wav2vec2(path: str, lang: str) -> EngineResult:
     """
-    voidful/wav2vec2-xlsr-multilingual-56 — a CTC fine-tune of facebook/wav2vec2-large-xlsr-53
-    (the base XLSR-53 checkpoint has no tokenizer/vocab and cannot run ASR directly).
-    Local, multilingual (incl. Hindi), runs on-device.
-    Loaded once via the cached HuggingFace ASR pipeline; runs entirely on-device,
-    no API key, no cloud dependency.
+    facebook/wav2vec2-large-xlsr-53 — local, multilingual (incl. Hindi) CTC model.
+    The raw XLSR-53 backbone has no vocabulary/CTC head of its own, so this routes
+    to a verified fine-tuned checkpoint built on that same backbone for the
+    requested language (see WAV2VEC2_LANG_MODEL_MAP), falling back to the English
+    checkpoint for languages without a dedicated fine-tune. Loaded once via
+    st.cache_resource; runs entirely on-device, no API key, no cloud dependency.
     """
     r = EngineResult(engine="Wav2Vec2-XLSR-53")
     if not TRANSFORMERS_AVAILABLE:
         r.status = "error"; r.error_message = "transformers/torch not installed"; return r
-
-    # ── Guard: make sure we actually received a real, existing file path ──────────
-    # (this is what was silently turning into `None` further down the stack)
-    if not path or not isinstance(path, (str, bytes, os.PathLike)):
-        r.status = "error"
-        r.error_message = "Wav2Vec2-XLSR-53: no audio file path was provided (got None)."
-        return r
-    if not os.path.exists(path):
-        r.status = "error"
-        r.error_message = f"Wav2Vec2-XLSR-53: audio file not found at '{path}'."
-        return r
-
     try:
-        pipe = get_wav2vec2_pipeline()
-        t0   = time.perf_counter()
-
-        # Load the waveform ourselves (torchaudio first, existing librosa/soundfile
-        # loader as fallback) and feed the pipeline a raw array instead of a bare
-        # path — this avoids the pipeline's internal ffmpeg/path-decode step, which
-        # was the source of the NoneType crash.
-        if TORCHAUDIO_AVAILABLE:
-            waveform, sr = torchaudio.load(path)
-            if waveform.shape[0] > 1:
-                waveform = waveform.mean(dim=0, keepdim=True)
-            if sr != TARGET_SR:
-                waveform = torchaudio.functional.resample(waveform, sr, TARGET_SR)
-                sr = TARGET_SR
-            audio_array = waveform.squeeze(0).numpy()
+        if lang in WAV2VEC2_LANG_MODEL_MAP:
+            model_id = WAV2VEC2_LANG_MODEL_MAP[lang]
+            fallback_note = ""
         else:
-            audio_array, sr = _load_audio_array(path, TARGET_SR)
+            model_id = WAV2VEC2_DEFAULT_MODEL
+            fallback_note = (
+                f"No fine-tuned Wav2Vec2-XLSR-53 checkpoint for '{lang}' — "
+                "used the English checkpoint as a fallback."
+            )
 
-        out = pipe({"raw": audio_array, "sampling_rate": sr})
-        r.latency_sec       = round(time.perf_counter() - t0, 3)
-        r.transcript        = (out.get("text", "") if isinstance(out, dict) else "").strip()
-        r.detected_language = lang if lang != "auto" else "unknown"
+        processor, model = get_wav2vec2_model(model_id)
+        # Decode the audio ourselves (librosa/soundfile) — no pipeline, no torchcodec.
+        audio, sr = _load_audio_array(path, TARGET_SR)
+        inputs = processor(audio, sampling_rate=sr, return_tensors="pt", padding=True)
+
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            logits = model(inputs.input_values).logits
+        r.latency_sec = round(time.perf_counter() - t0, 3)
+
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcript    = processor.batch_decode(predicted_ids)[0]
+
+        r.transcript        = transcript.strip()
+        r.detected_language = lang if lang in WAV2VEC2_LANG_MODEL_MAP else "en (fallback)"
         r.status            = "success" if r.transcript else "error"
         if not r.transcript:
             r.error_message = "Wav2Vec2-XLSR-53 returned an empty transcript."
+        elif fallback_note:
+            r.error_message = fallback_note
     except Exception as e:
         r.status = "error"; r.error_message = str(e)[:250]
     return r
