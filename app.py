@@ -3,12 +3,12 @@
 ║               ASR INTELLIGENCE LAB PRO  — Benchmarking Platform                    ║
 ║                    Production-Ready · Streamlit Cloud Safe                          ║
 ╠══════════════════════════════════════════════════════════════════════════════════════╣
-║  Engines   : Whisper · Whisper-Turbo · Faster-Whisper · Sarvam AI                 ║
-║              Shrutam-2 (HF) · Gemini · IndicConformer · IndicWav2Vec              ║
+║  Engines   : Whisper · Faster-Whisper · Sarvam AI · Wav2Vec2-XLSR-53             ║
+║              SeamlessM4T-v2                                                       ║
 ║  Mic       : streamlit_mic_recorder  (no sounddevice / no ALSA)                    ║
 ║  TTS       : gTTS                                                                   ║
 ║  Metrics   : Latency · RTF · WER · CER · Accuracy · Rankings                      ║
-║  Extras    : AI Analysis · PDF Report · Audio Preprocessing · Radar Charts         ║
+║  Extras    : PDF Report · Audio Preprocessing · Radar Charts                       ║
 ╚══════════════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -30,8 +30,8 @@ from typing import Optional, Dict, Any, List
 # CORE THIRD-PARTY
 # ─────────────────────────────────────────────────────────────────────────────────────
 import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # SOFT IMPORTS — each block fully isolated; missing package sets flag to False
@@ -60,25 +60,6 @@ try:
     REQUESTS_AVAILABLE = True
 except Exception:
     REQUESTS_AVAILABLE = False
-
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-except Exception:
-    GEMINI_AVAILABLE = False
-
-try:
-    from transformers import pipeline as hf_pipeline
-    import torch
-    TRANSFORMERS_AVAILABLE = True
-except Exception:
-    TRANSFORMERS_AVAILABLE = False
-
-try:
-    import torchaudio
-    TORCHAUDIO_AVAILABLE = True
-except Exception:
-    TORCHAUDIO_AVAILABLE = False
 
 try:
     import jiwer
@@ -129,15 +110,26 @@ try:
 except Exception:
     SOUNDFILE_AVAILABLE = False
 
+try:
+    from transformers import pipeline as hf_pipeline, AutoProcessor, SeamlessM4Tv2Model
+    import torch
+    TRANSFORMERS_AVAILABLE = True
+except Exception:
+    TRANSFORMERS_AVAILABLE = False
+
+try:
+    import torchaudio
+    TORCHAUDIO_AVAILABLE = True
+except Exception:
+    TORCHAUDIO_AVAILABLE = False
+
 
 # ══════════════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════════════
 SARVAM_API_URL     = "https://api.sarvam.ai/speech-to-text"
-# ⚠️ BROKEN API — api.shrutam.ai DNS does not resolve. Auto-fallbacks to HF model.
-SHRUTAM2_API_URL   = "https://api.shrutam.ai/v2/transcribe"
-SHRUTAM2_HF_MODEL  = "bharatgenai/Shrutam-2"
-GEMINI_MODEL       = "gemini-2.0-flash"
+WAV2VEC2_MODEL_ID  = "voidful/wav2vec2-xlsr-multilingual-56"
+SEAMLESS_MODEL_ID  = "facebook/seamless-m4t-v2-large"
 SARVAM_MAX_SECS    = 30.0
 LOG_FILE           = "asr_lab_pro_logs.xlsx"
 LIVE_CAPTION_LIMIT = 5
@@ -168,17 +160,13 @@ LANGUAGES = [
     ("pt",   "🇧🇷 Portuguese"),
     ("ru",   "🇷🇺 Russian"),
 ]
-LANG_CODE_TO_LABEL = {c: l for c, l in LANGUAGES}
 
 ENGINE_COLORS = {
-    "Whisper":          "#4F46E5",
-    "Whisper-Turbo":    "#7C3AED",
-    "Faster-Whisper":   "#06B6D4",
-    "Sarvam AI":        "#F59E0B",
-    "Shrutam-2":        "#8B5CF6",
-    "Gemini":           "#10B981",
-    "IndicConformer":   "#EF4444",
-    "IndicWav2Vec":     "#F97316",
+    "Whisper":            "#4F46E5",
+    "Faster-Whisper":     "#06B6D4",
+    "Sarvam AI":          "#F59E0B",
+    "Wav2Vec2-XLSR-53":   "#EC4899",
+    "SeamlessM4T-v2":     "#8B5CF6",
 }
 
 SARVAM_LANG_MAP = {
@@ -187,29 +175,22 @@ SARVAM_LANG_MAP = {
     "pa": "pa-IN", "or": "od-IN", "en": "en-IN",
 }
 
-# AI4Bharat IndicWhisper fallback map
-INDIC_WHISPER_MAP = {
-    "hi": "ai4bharat/indic-whisper-medium-hi",
-    "ta": "ai4bharat/indic-whisper-medium-ta",
-    "te": "ai4bharat/indic-whisper-medium-te",
-    "kn": "ai4bharat/indic-whisper-medium-kn",
-    "ml": "ai4bharat/indic-whisper-medium-ml",
-    "mr": "ai4bharat/indic-whisper-medium-mr",
-    "bn": "ai4bharat/indic-whisper-medium-bn",
-    "gu": "ai4bharat/indic-whisper-medium-gu",
-    "pa": "ai4bharat/indic-whisper-medium-pa",
+# SeamlessM4T-v2 targets/expects ISO 639-3 style language tokens
+SEAMLESS_LANG_MAP = {
+    "en": "eng", "hi": "hin", "ta": "tam", "te": "tel", "kn": "kan",
+    "ml": "mal", "mr": "mar", "bn": "ben", "gu": "guj", "pa": "pan",
+    "ur": "urd", "or": "ory", "as": "asm",
+    "es": "spa", "fr": "fra", "de": "deu", "zh": "cmn", "ja": "jpn",
+    "ko": "kor", "ar": "arb", "pt": "por", "ru": "rus",
 }
 
 # Model information table data
 MODEL_INFO = [
-    {"Engine": "Whisper",         "Architecture": "Transformer Encoder-Decoder", "Type": "🖥️ Local",  "Size": "~244MB (base)", "Languages": "99+",       "Avg Latency": "0.5–2s"},
-    {"Engine": "Whisper-Turbo",   "Architecture": "Transformer (Distilled)",     "Type": "🖥️ Local",  "Size": "~809MB (large-v3-turbo)", "Languages": "99+", "Avg Latency": "0.3–1s"},
-    {"Engine": "Faster-Whisper",  "Architecture": "CTranslate2 Whisper",         "Type": "🖥️ Local",  "Size": "~244MB (base)", "Languages": "99+",       "Avg Latency": "0.3–1s"},
-    {"Engine": "Sarvam AI",       "Architecture": "Saarika v2.5 (Cloud)",        "Type": "☁️ Cloud",  "Size": "N/A",           "Languages": "11 Indic",  "Avg Latency": "1–3s"},
-    {"Engine": "Shrutam-2",       "Architecture": "BharatGen (HuggingFace)",     "Type": "🖥️ Local",  "Size": "~1.5GB",        "Languages": "12 Indic",  "Avg Latency": "2–5s"},
-    {"Engine": "Gemini",          "Architecture": "Gemini 2.0 Flash (Multimodal)","Type": "☁️ Cloud", "Size": "N/A",           "Languages": "100+",      "Avg Latency": "2–6s"},
-    {"Engine": "IndicConformer",  "Architecture": "Conformer CTC (AI4Bharat)",   "Type": "🖥️ Local",  "Size": "~500MB",        "Languages": "22 Indic",  "Avg Latency": "1–3s"},
-    {"Engine": "IndicWav2Vec",    "Architecture": "Wav2Vec2 (AI4Bharat)",        "Type": "🖥️ Local",  "Size": "~300MB",        "Languages": "9 Indic",   "Avg Latency": "1–4s"},
+    {"Engine": "Whisper",           "Architecture": "Transformer Encoder-Decoder", "Type": "🖥️ Local",  "Size": "~244MB (base)", "Languages": "99+",       "Avg Latency": "0.5–2s"},
+    {"Engine": "Faster-Whisper",    "Architecture": "CTranslate2 Whisper",         "Type": "🖥️ Local",  "Size": "~244MB (base)", "Languages": "99+",       "Avg Latency": "0.3–1s"},
+    {"Engine": "Sarvam AI",         "Architecture": "Saarika v2.5 (Cloud)",        "Type": "☁️ Cloud",  "Size": "N/A",           "Languages": "11 Indic",  "Avg Latency": "1–3s"},
+    {"Engine": "Wav2Vec2-XLSR-53",  "Architecture": "Wav2Vec2 XLSR (HuggingFace)", "Type": "🖥️ Local",  "Size": "~1.2GB",        "Languages": "53 (multilingual)", "Avg Latency": "1–3s"},
+    {"Engine": "SeamlessM4T-v2",    "Architecture": "SeamlessM4T-v2 (HuggingFace)","Type": "🖥️ Local",  "Size": "~9GB",          "Languages": "100+",      "Avg Latency": "2–6s"},
 ]
 
 
@@ -378,90 +359,39 @@ def get_whisper_model(size: str):
     return openai_whisper.load_model(size)
 
 
-@st.cache_resource(show_spinner="⏳ Loading Whisper-Turbo model…")
-def get_whisper_turbo_model():
-    # large-v3-turbo is the official distilled turbo model
-    return openai_whisper.load_model("large-v3-turbo")
-
-
 @st.cache_resource(show_spinner="⏳ Loading Faster-Whisper model…")
 def get_faster_whisper_model(size: str):
     return FWModel(size, device="cpu", compute_type="int8")
 
 
-@st.cache_resource(show_spinner="⏳ Loading Shrutam-2 from HuggingFace…")
-def get_shrutam2_pipeline():
+@st.cache_resource(show_spinner="⏳ Loading Wav2Vec2-XLSR-53 (voidful/wav2vec2-xlsr-multilingual-56)…")
+def get_wav2vec2_pipeline():
+    return hf_pipeline("automatic-speech-recognition", model=WAV2VEC2_MODEL_ID, device="cpu")
+
+
+@st.cache_resource(show_spinner="⏳ Loading SeamlessM4T-v2-Large (facebook/seamless-m4t-v2-large)… this can take a while on first run")
+def get_seamless_m4t_v2():
+    processor = AutoProcessor.from_pretrained(SEAMLESS_MODEL_ID)
+    model     = SeamlessM4Tv2Model.from_pretrained(SEAMLESS_MODEL_ID)
+    model.eval()
+    return processor, model
+
+
+def _load_audio_array(path: str, target_sr: int = TARGET_SR):
     """
-    Attempt to lazy-load Shrutam-2 (bharatgenai/Shrutam-2) via the generic
-    transformers ASR pipeline.
-
-    KNOWN LIMITATION: Shrutam-2 is NOT a standard Auto-class-compatible ASR
-    model. Per BharatGen's own model card, it's a custom speech-encoder +
-    MoE-projector + frozen-LLM architecture (model type `shrutam2_asr`)
-    distributed as raw checkpoints (encoder.pt, model.pt, llm/) meant to be
-    run through BharatGen's own bespoke inference script and a pinned
-    torch==2.3.0 environment — not through `transformers.pipeline(...)`,
-    even with trust_remote_code=True. This call is therefore EXPECTED to
-    fail here; that's why layer 3 (IndicWhisper) exists as the realistic
-    working fallback for this engine slot. If BharatGen later ships a
-    pipeline-compatible checkpoint, this function will pick it up
-    automatically with no other code changes needed.
+    Load mono float32 audio as a numpy array at target_sr.
+    Tries librosa first (handles resampling), falls back to soundfile.
+    Raises RuntimeError if neither backend is available.
     """
-    return hf_pipeline(
-        "automatic-speech-recognition",
-        model=SHRUTAM2_HF_MODEL,
-        device="cpu",
-    )
-
-
-@st.cache_resource(show_spinner="⏳ Loading IndicConformer (600M multilingual)…")
-def get_indic_conformer_model():
-    """
-    AI4Bharat IndicConformer-600M-Multilingual — the real, confirmed repo ID.
-    NOTE: this model does NOT work with the generic transformers ASR pipeline —
-    it ships custom modeling code and must be loaded via AutoModel with
-    trust_remote_code=True, then called directly as model(wav_tensor, lang, mode).
-    Requires the `torchaudio` package (see requirements.txt).
-    """
-    from transformers import AutoModel
-    return AutoModel.from_pretrained(
-        "ai4bharat/indic-conformer-600m-multilingual",
-        trust_remote_code=True,
-    )
-
-
-@st.cache_resource(show_spinner="⏳ Loading IndicWav2Vec…")
-def get_indic_wav2vec_pipeline(lang: str):
-    """
-    AI4Bharat IndicWav2Vec — language-specific Wav2Vec2 CTC model.
-
-    IMPORTANT: the original `ai4bharat/indicwav2vec_v1_<lang>` repos are GATED
-    on HuggingFace (they 403 unless you've requested + been granted access).
-    The confirmed, non-gated public equivalents use hyphenated names instead
-    (e.g. `ai4bharat/indicwav2vec-hindi`, `ai4bharat/indicwav2vec-odia`).
-    Only "hi" and "or" have been independently verified to exist under this
-    naming as of this writing — other languages follow the same pattern but
-    were not individually confirmed. If a language 404s, tell us the exact
-    error and we'll correct that single mapping.
-    """
-    lang_name_map = {
-        "hi": "hindi", "ta": "tamil", "te": "telugu", "kn": "kannada",
-        "mr": "marathi", "bn": "bengali", "gu": "gujarati",
-        "or": "odia", "pa": "punjabi", "as": "assamese",
-    }
-    lang_name = lang_name_map.get(lang, "hindi")
-    model_id  = f"ai4bharat/indicwav2vec-{lang_name}"
-    try:
-        return hf_pipeline("automatic-speech-recognition", model=model_id, device="cpu")
-    except Exception:
-        # Fall back to the old gated naming in case a token with access is configured
-        legacy_id = f"ai4bharat/indicwav2vec_v1_{lang_name}"
-        return hf_pipeline("automatic-speech-recognition", model=legacy_id, device="cpu")
-
-
-@st.cache_resource(show_spinner="⏳ Loading IndicWhisper fallback…")
-def get_indic_whisper_pipeline(model_id: str):
-    return hf_pipeline("automatic-speech-recognition", model=model_id, device="cpu")
+    if LIBROSA_AVAILABLE:
+        audio, sr = librosa.load(path, sr=target_sr, mono=True)
+        return audio, sr
+    if SOUNDFILE_AVAILABLE:
+        audio, sr = sf.read(path, always_2d=False)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        return audio.astype("float32"), sr
+    raise RuntimeError("No audio backend available — install librosa or soundfile")
 
 
 
@@ -475,27 +405,6 @@ def run_whisper(path: str, size: str, lang: str) -> EngineResult:
         r.status = "error"; r.error_message = "openai-whisper not installed"; return r
     try:
         model  = get_whisper_model(size)
-        kwargs: Dict[str, Any] = {"task": "transcribe"}
-        if lang != "auto":
-            kwargs["language"] = lang
-        t0 = time.perf_counter()
-        out = model.transcribe(path, **kwargs)
-        r.latency_sec       = round(time.perf_counter() - t0, 3)
-        r.transcript        = out.get("text", "").strip()
-        r.detected_language = out.get("language", lang)
-        r.status            = "success"
-    except Exception as e:
-        r.status = "error"; r.error_message = str(e)
-    return r
-
-
-def run_whisper_turbo(path: str, lang: str) -> EngineResult:
-    """Whisper large-v3-turbo — fastest high-quality Whisper variant."""
-    r = EngineResult(engine="Whisper-Turbo")
-    if not WHISPER_AVAILABLE:
-        r.status = "error"; r.error_message = "openai-whisper not installed"; return r
-    try:
-        model  = get_whisper_turbo_model()
         kwargs: Dict[str, Any] = {"task": "transcribe"}
         if lang != "auto":
             kwargs["language"] = lang
@@ -565,346 +474,91 @@ def run_sarvam(path: str, duration: float, api_key: str, lang: str) -> EngineRes
     return r
 
 
-def run_shrutam2(path: str, api_key: str, lang: str) -> EngineResult:
+def run_wav2vec2(path: str, lang: str) -> EngineResult:
     """
-    Shrutam-2 with three-path architecture:
-    1. REST API (currently BROKEN — DNS failure for api.shrutam.ai)
-    2. HuggingFace model bharatgenai/Shrutam-2 (primary local path)
-    3. IndicWhisper fallback if HF model fails
-    All paths isolated — never crashes app.
+    voidful/wav2vec2-xlsr-multilingual-56 — a CTC fine-tune of facebook/wav2vec2-large-xlsr-53
+    (the base XLSR-53 checkpoint has no tokenizer/vocab and cannot run ASR directly).
+    Local, multilingual (incl. Hindi), runs on-device.
+    Loaded once via the cached HuggingFace ASR pipeline; runs entirely on-device,
+    no API key, no cloud dependency.
     """
-    r = EngineResult(engine="Shrutam-2")
-    api_err = ""
-
-    # ── Path 1: REST API ────────────────────────────────────────────────────────────
-    if api_key and REQUESTS_AVAILABLE:
-        try:
-            t0 = time.perf_counter()
-            with open(path, "rb") as f:
-                data = {} if lang == "auto" else {"language": lang}
-                resp = _requests.post(
-                    SHRUTAM2_API_URL,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    files={"file": ("audio.wav", f, "audio/wav")},
-                    data=data, timeout=30,
-                )
-            r.latency_sec = round(time.perf_counter() - t0, 3)
-            if resp.status_code == 200:
-                payload = resp.json()
-                r.transcript        = payload.get("text", payload.get("transcript", "")).strip()
-                r.detected_language = payload.get("language", lang)
-                r.status            = "success"
-                return r
-            else:
-                api_err = f"HTTP {resp.status_code}"
-        except _requests.exceptions.ConnectionError:
-            api_err = "BROKEN API — api.shrutam.ai DNS failure"
-        except _requests.exceptions.Timeout:
-            api_err = "API timeout (30s)"
-        except Exception as e:
-            api_err = str(e)
-    else:
-        api_err = "No API key"
-
+    r = EngineResult(engine="Wav2Vec2-XLSR-53")
     if not TRANSFORMERS_AVAILABLE:
-        r.status = "skipped"
-        r.error_message = f"API: {api_err} | transformers not installed"
+        r.status = "error"; r.error_message = "transformers/torch not installed"; return r
+
+    # ── Guard: make sure we actually received a real, existing file path ──────────
+    # (this is what was silently turning into `None` further down the stack)
+    if not path or not isinstance(path, (str, bytes, os.PathLike)):
+        r.status = "error"
+        r.error_message = "Wav2Vec2-XLSR-53: no audio file path was provided (got None)."
+        return r
+    if not os.path.exists(path):
+        r.status = "error"
+        r.error_message = f"Wav2Vec2-XLSR-53: audio file not found at '{path}'."
         return r
 
-    # ── Path 2: HuggingFace bharatgenai/Shrutam-2 ──────────────────────────────────
     try:
-        pipe = get_shrutam2_pipeline()
+        pipe = get_wav2vec2_pipeline()
         t0   = time.perf_counter()
-        out  = pipe(path)
+
+        # Load the waveform ourselves (torchaudio first, existing librosa/soundfile
+        # loader as fallback) and feed the pipeline a raw array instead of a bare
+        # path — this avoids the pipeline's internal ffmpeg/path-decode step, which
+        # was the source of the NoneType crash.
+        if TORCHAUDIO_AVAILABLE:
+            waveform, sr = torchaudio.load(path)
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+            if sr != TARGET_SR:
+                waveform = torchaudio.functional.resample(waveform, sr, TARGET_SR)
+                sr = TARGET_SR
+            audio_array = waveform.squeeze(0).numpy()
+        else:
+            audio_array, sr = _load_audio_array(path, TARGET_SR)
+
+        out = pipe({"raw": audio_array, "sampling_rate": sr})
         r.latency_sec       = round(time.perf_counter() - t0, 3)
         r.transcript        = (out.get("text", "") if isinstance(out, dict) else "").strip()
-        r.detected_language = lang
-        r.status            = "success"
-        r.error_message     = f"HF model (API: {api_err})"
-        return r
-    except RuntimeError as e:
-        err = str(e)
-        if any(k in err.lower() for k in ("torchcodec", "dll", "ffmpeg")):
-            hf_err = "torchcodec/FFmpeg DLL mismatch"
-        else:
-            hf_err = err[:120]
-    except (KeyError, ValueError) as e:
-        err = str(e)
-        if "shrutam2_asr" in err or "does not recognize this architecture" in err.lower():
-            hf_err = ("Shrutam-2 uses a custom non-pipeline architecture "
-                      "(expected — see get_shrutam2_pipeline() docstring)")
-        else:
-            hf_err = err[:120]
+        r.detected_language = lang if lang != "auto" else "unknown"
+        r.status            = "success" if r.transcript else "error"
+        if not r.transcript:
+            r.error_message = "Wav2Vec2-XLSR-53 returned an empty transcript."
     except Exception as e:
-        hf_err = str(e)[:120]
-
-    # ── Path 3: IndicWhisper fallback ───────────────────────────────────────────────
-    try:
-        model_id = INDIC_WHISPER_MAP.get(lang, "openai/whisper-medium")
-        pipe2    = get_indic_whisper_pipeline(model_id)
-        t0       = time.perf_counter()
-        out2     = pipe2(path)
-        r.latency_sec       = round(time.perf_counter() - t0, 3)
-        r.transcript        = (out2.get("text", "") if isinstance(out2, dict) else "").strip()
-        r.detected_language = lang
-        r.status            = "success"
-        r.error_message     = f"IndicWhisper fallback (API:{api_err}, HF:{hf_err})"
-    except Exception as e:
-        r.status        = "skipped"
-        r.error_message = f"All paths failed — API:{api_err} | HF:{hf_err} | Fallback:{str(e)[:80]}"
-
+        r.status = "error"; r.error_message = str(e)[:250]
     return r
 
 
-def _run_gemini_inner(path: str, api_key: str, lang: str) -> EngineResult:
+def run_seamless_m4t(path: str, lang: str) -> EngineResult:
     """
-    Google Gemini multimodal transcription.
-    - 20s PROCESSING timeout — never hangs UI
-    - 60s total call timeout
-    - Always cleans up uploaded file
-    - Actionable error messages for all failure modes
+    facebook/seamless-m4t-v2-large — local, multilingual (incl. Hindi) speech-to-text.
+    Loaded once via cached AutoProcessor + SeamlessM4Tv2Model; runs entirely on-device,
+    no API key, no cloud dependency. Audio is decoded to a 16kHz mono array and fed
+    through the model's `.generate(..., generate_speech=False)` text path.
     """
-    r = EngineResult(engine="Gemini")
-
-    if not GEMINI_AVAILABLE:
-        r.status = "error"
-        r.error_message = "google-generativeai not installed"
-        return r
-    if not api_key:
-        r.status = "skipped"
-        r.error_message = "No Gemini API key (get free key at aistudio.google.com)"
-        return r
-
-    uploaded_file = None
-    t0 = time.perf_counter()      # monotonic clock — used only for latency_sec
-    wall_start = time.time()      # wall clock  — used only for the 55s guard below
-
+    r = EngineResult(engine="SeamlessM4T-v2")
+    if not TRANSFORMERS_AVAILABLE:
+        r.status = "error"; r.error_message = "transformers/torch not installed"; return r
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
+        processor, model = get_seamless_m4t_v2()
+        audio, sr = _load_audio_array(path, TARGET_SR)
+        tgt_lang  = SEAMLESS_LANG_MAP.get(lang, "eng")
 
-        lang_label = LANG_CODE_TO_LABEL.get(lang, "the spoken language")
-        if lang == "auto":
-            prompt = (
-                "Transcribe every spoken word in the audio verbatim. "
-                "Auto-detect the language. "
-                "Output ONLY the raw transcript — no labels, no quotes, no commentary."
-            )
-        else:
-            prompt = (
-                f"Transcribe every spoken word verbatim in {lang_label}. "
-                "Output ONLY the raw transcript — no labels, no quotes, no commentary."
-            )
+        inputs = processor(audios=audio, sampling_rate=sr, return_tensors="pt")
 
-        uploaded_file = genai.upload_file(path=path, mime_type="audio/wav")
-
-        # Wait for PROCESSING with strict 20s timeout
-        proc_start = time.time()
-        while uploaded_file.state.name == "PROCESSING":
-            if time.time() - proc_start > 20:
-                r.status = "error"
-                r.error_message = "Gemini stuck in PROCESSING >20s. Try a shorter audio."
-                return r
-            time.sleep(1.5)
-            try:
-                uploaded_file = genai.get_file(uploaded_file.name)
-            except Exception:
-                break
-
-        if uploaded_file.state.name == "FAILED":
-            r.status = "error"
-            r.error_message = "Gemini rejected the audio file (FAILED state)."
-            return r
-
-        if time.time() - wall_start > 55:
-            r.status = "error"
-            r.error_message = "Gemini timed out before generating."
-            return r
-
-        response = model.generate_content(
-            [prompt, uploaded_file],
-            generation_config=genai.GenerationConfig(temperature=0.0, max_output_tokens=4096),
-            request_options={"timeout": 60},
-        )
-
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            output_tokens = model.generate(**inputs, tgt_lang=tgt_lang, generate_speech=False)
         r.latency_sec = round(time.perf_counter() - t0, 3)
 
-        text = ""
-        if hasattr(response, "text") and response.text:
-            text = response.text.strip()
-        elif hasattr(response, "candidates") and response.candidates:
-            for cand in response.candidates:
-                if hasattr(cand, "content") and cand.content.parts:
-                    text = "".join(p.text for p in cand.content.parts if hasattr(p, "text")).strip()
-                    if text:
-                        break
-
-        r.transcript        = text
-        r.detected_language = lang
-        r.status            = "success" if text else "error"
-        if not text:
-            r.error_message = "Gemini returned empty transcript."
-
+        transcript = processor.decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
+        r.transcript        = transcript.strip()
+        r.detected_language = tgt_lang
+        r.status            = "success" if r.transcript else "error"
+        if not r.transcript:
+            r.error_message = "SeamlessM4T-v2 returned an empty transcript."
     except Exception as e:
-        err = str(e)
-        r.status = "skipped"
-        if "API_KEY_INVALID" in err or "API key not valid" in err:
-            r.error_message = "Invalid Gemini API key — visit https://aistudio.google.com"
-        elif "quota" in err.lower():
-            r.error_message = "Gemini quota exceeded. Wait or upgrade plan."
-        elif "timeout" in err.lower() or "deadline" in err.lower():
-            r.error_message = "Gemini API call timed out (60s)."
-        elif "upload" in err.lower():
-            r.error_message = "Gemini upload failed. pip install --upgrade google-generativeai"
-        else:
-            r.error_message = f"Gemini: {err[:250]}"
-
-    finally:
-        if uploaded_file is not None:
-            try:
-                genai.delete_file(uploaded_file.name)
-            except Exception:
-                pass
-
+        r.status = "error"; r.error_message = str(e)[:250]
     return r
-
-
-def run_gemini(path: str, api_key: str, lang: str, hard_timeout: float = 90.0) -> EngineResult:
-    """
-    Public wrapper around _run_gemini_inner().
-
-    The Gemini SDK's upload_file()/get_file() calls carry NO built-in timeout —
-    if the network stalls or Google's endpoint doesn't respond, those calls can
-    hang forever with no exception ever raised, freezing the whole benchmark
-    loop with no output. This wrapper runs the real work in a background thread
-    and enforces a hard wall-clock ceiling, so run_gemini() is ALWAYS guaranteed
-    to return within `hard_timeout` seconds no matter what the SDK does.
-    """
-    import concurrent.futures
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(_run_gemini_inner, path, api_key, lang)
-    try:
-        result = future.result(timeout=hard_timeout)
-        pool.shutdown(wait=False)
-        return result
-    except concurrent.futures.TimeoutError:
-        pool.shutdown(wait=False)  # don't block on the stuck worker thread
-        r = EngineResult(engine="Gemini")
-        r.status = "error"
-        r.error_message = (
-            f"Gemini call exceeded {hard_timeout:.0f}s hard timeout "
-            "(network stalled or Google API unresponsive). Try a shorter "
-            "audio clip or check your connection, then retry."
-        )
-        return r
-    # NOTE: the background thread itself is not forcibly killed (Python
-    # threads can't be killed safely) — on a real timeout it keeps running in
-    # the background as a daemon-like orphan and will clean up its own
-    # uploaded_file via `finally` inside _run_gemini_inner whenever the SDK
-    # call eventually returns, but its result is discarded since we've
-    # already returned the timeout error above.
-
-
-def run_indic_conformer(path: str, lang: str) -> EngineResult:
-    """
-    AI4Bharat IndicConformer-600M-Multilingual — Conformer Hybrid CTC+RNNT
-    model for 22 Indic languages (repo: ai4bharat/indic-conformer-600m-multilingual).
-
-    This model is NOT pipeline-compatible — it ships custom `AutoModel` code
-    and is called directly as `model(wav_tensor, lang_code, "ctc")`, so audio
-    must be loaded via torchaudio, resampled to 16kHz, and averaged to mono.
-    """
-    r = EngineResult(engine="IndicConformer")
-    if not TRANSFORMERS_AVAILABLE:
-        r.status = "error"; r.error_message = "transformers not installed"; return r
-    if not TORCHAUDIO_AVAILABLE:
-        r.status = "error"; r.error_message = "torchaudio not installed (pip install torchaudio)"; return r
-    try:
-        model = get_indic_conformer_model()
-        wav, sr = torchaudio.load(path)
-        wav = torch.mean(wav, dim=0, keepdim=True)  # stereo -> mono
-        if sr != TARGET_SR:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)
-            wav = resampler(wav)
-
-        # Model needs a concrete language code — pick a sane default on "auto"
-        model_lang = lang if lang != "auto" else "hi"
-
-        t0  = time.perf_counter()
-        out = model(wav, model_lang, "ctc")
-        r.latency_sec = round(time.perf_counter() - t0, 3)
-
-        text = out if isinstance(out, str) else (out[0] if isinstance(out, (list, tuple)) and out else "")
-        r.transcript        = str(text).strip()
-        r.detected_language = model_lang
-        r.status            = "success"
-    except Exception as e:
-        r.status = "error"; r.error_message = str(e)[:200]
-    return r
-
-
-def run_indic_wav2vec(path: str, lang: str) -> EngineResult:
-    """AI4Bharat IndicWav2Vec — language-specific Wav2Vec2 model for Indic languages."""
-    r = EngineResult(engine="IndicWav2Vec")
-    if not TRANSFORMERS_AVAILABLE:
-        r.status = "error"; r.error_message = "transformers not installed"; return r
-    try:
-        pipe = get_indic_wav2vec_pipeline(lang)
-        t0   = time.perf_counter()
-        out  = pipe(path)
-        r.latency_sec       = round(time.perf_counter() - t0, 3)
-        r.transcript        = (out.get("text", "") if isinstance(out, dict) else "").strip()
-        r.detected_language = lang
-        r.status            = "success"
-    except Exception as e:
-        r.status = "error"; r.error_message = str(e)[:200]
-    return r
-
-
-# ══════════════════════════════════════════════════════════════════════════════════════
-# AI ANALYSIS  (Gemini-powered, non-blocking)
-# ══════════════════════════════════════════════════════════════════════════════════════
-
-def run_ai_analysis(transcript: str, api_key: str, lang_label: str) -> Optional[Dict[str, str]]:
-    """
-    Run AI analysis on a transcript using Gemini.
-    Returns dict with keys: grammar, translation, summary, keywords, sentiment, entities.
-    Returns None if Gemini unavailable or api_key missing.
-    Never interrupts benchmarking — called separately after benchmark completes.
-    """
-    if not GEMINI_AVAILABLE or not api_key or not transcript.strip():
-        return None
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        prompt = f"""
-Analyze the following transcript and provide a structured response.
-Language: {lang_label}
-Transcript: "{transcript}"
-
-Respond in this exact JSON format:
-{{
-  "grammar": "<grammar corrected version of the transcript>",
-  "translation": "<English translation if not already English, else write 'Already in English'>",
-  "summary": "<1-2 sentence summary>",
-  "keywords": "<comma-separated key terms>",
-  "sentiment": "<Positive / Negative / Neutral with 1 sentence explanation>",
-  "entities": "<named entities: people, places, organizations found>"
-}}
-Respond ONLY with the JSON. No extra text.
-"""
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=1024),
-            request_options={"timeout": 30},
-        )
-        text = (getattr(response, "text", "") or "").strip()
-        # Clean JSON fences if present
-        text = text.replace("```json", "").replace("```", "").strip()
-        import json
-        return json.loads(text)
-    except Exception:
-        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -929,11 +583,6 @@ def run_benchmark(path: str, duration: float, cfg: Dict[str, Any]) -> List[Engin
         results.append(run_whisper(path, cfg["model_size"], cfg["lang"]))
         done += 1
 
-    if enabled.get("Whisper-Turbo"):
-        _tick("⚙️ Running Whisper-Turbo…")
-        results.append(run_whisper_turbo(path, cfg["lang"]))
-        done += 1
-
     if enabled.get("Faster-Whisper"):
         _tick("⚙️ Running Faster-Whisper…")
         results.append(run_faster_whisper(path, cfg["model_size"], cfg["lang"]))
@@ -944,24 +593,14 @@ def run_benchmark(path: str, duration: float, cfg: Dict[str, Any]) -> List[Engin
         results.append(run_sarvam(path, duration, cfg["sarvam_key"], cfg["lang"]))
         done += 1
 
-    if enabled.get("Shrutam-2"):
-        _tick("☁️ Running Shrutam-2…")
-        results.append(run_shrutam2(path, cfg["shrutam_key"], cfg["lang"]))
+    if enabled.get("Wav2Vec2-XLSR-53"):
+        _tick("🧬 Running Wav2Vec2-XLSR-53…")
+        results.append(run_wav2vec2(path, cfg["lang"]))
         done += 1
 
-    if enabled.get("Gemini"):
-        _tick("🤖 Running Gemini…")
-        results.append(run_gemini(path, cfg["gemini_key"], cfg["lang"]))
-        done += 1
-
-    if enabled.get("IndicConformer"):
-        _tick("🇮🇳 Running IndicConformer…")
-        results.append(run_indic_conformer(path, cfg["lang"]))
-        done += 1
-
-    if enabled.get("IndicWav2Vec"):
-        _tick("🇮🇳 Running IndicWav2Vec…")
-        results.append(run_indic_wav2vec(path, cfg["lang"]))
+    if enabled.get("SeamlessM4T-v2"):
+        _tick("🌐 Running SeamlessM4T-v2…")
+        results.append(run_seamless_m4t(path, cfg["lang"]))
         done += 1
 
     bar.progress(1.0, text="✅ Benchmark complete!")
@@ -1333,9 +972,8 @@ def render_availability():
         ("🧠 Whisper",        WHISPER_AVAILABLE),
         ("⚡ FW",             FASTER_WHISPER_AVAILABLE),
         ("☁️ Sarvam",        REQUESTS_AVAILABLE),
-        ("💜 Shrutam-2",      TRANSFORMERS_AVAILABLE),
-        ("🤖 Gemini",         GEMINI_AVAILABLE),
-        ("🇮🇳 IndicModels",  TRANSFORMERS_AVAILABLE),
+        ("🧬 Wav2Vec2",       TRANSFORMERS_AVAILABLE),
+        ("🌐 SeamlessM4T",    TRANSFORMERS_AVAILABLE),
         ("📊 WER/CER",        JIWER_AVAILABLE),
         ("🔊 TTS",            GTTS_AVAILABLE),
         ("📒 Excel",          OPENPYXL_AVAILABLE),
@@ -1381,27 +1019,15 @@ def build_sidebar() -> Dict[str, Any]:
     sarvam_key = st.sidebar.text_input(
         "Sarvam AI Key", type="password", value=os.environ.get("SARVAM_API_KEY", ""),
     )
-    shrutam_key = st.sidebar.text_input(
-        "Shrutam-2 Key", type="password", value=os.environ.get("SHRUTAM_API_KEY", ""),
-        help="Leave blank — local HF model bharatgenai/Shrutam-2 is used automatically.",
-    )
-    gemini_key = st.sidebar.text_input(
-        "Gemini API Key", type="password",
-        value=os.environ.get("GEMINI_API_KEY", os.environ.get("GOOGLE_API_KEY", "")),
-        help="Free key at https://aistudio.google.com",
-    )
 
     st.sidebar.markdown("### ✅ Engines")
     col_a, col_b = st.sidebar.columns(2)
     engines = {
-        "Whisper":         col_a.checkbox("Whisper",         value=True),
-        "Whisper-Turbo":   col_b.checkbox("Whisper-Turbo",   value=False),
-        "Faster-Whisper":  col_a.checkbox("Faster-Whisper",  value=True),
-        "Sarvam AI":       col_b.checkbox("Sarvam AI",       value=True),
-        "Shrutam-2":       col_a.checkbox("Shrutam-2",       value=True),
-        "Gemini":          col_b.checkbox("Gemini",          value=True),
-        "IndicConformer":  col_a.checkbox("IndicConformer",  value=False),
-        "IndicWav2Vec":    col_b.checkbox("IndicWav2Vec",    value=False),
+        "Whisper":           col_a.checkbox("Whisper",           value=True),
+        "Faster-Whisper":    col_b.checkbox("Faster-Whisper",    value=True),
+        "Sarvam AI":         col_a.checkbox("Sarvam AI",         value=True),
+        "Wav2Vec2-XLSR-53":  col_b.checkbox("Wav2Vec2-XLSR-53",  value=True),
+        "SeamlessM4T-v2":    col_a.checkbox("SeamlessM4T-v2",    value=True),
     }
 
     st.sidebar.markdown("### 📝 Reference Transcript")
@@ -1418,8 +1044,6 @@ def build_sidebar() -> Dict[str, Any]:
         "model_size":      model_size,
         "noise_reduce":    noise_reduce,
         "sarvam_key":      sarvam_key.strip(),
-        "shrutam_key":     shrutam_key.strip(),
-        "gemini_key":      gemini_key.strip(),
         "engines_enabled": engines,
         "reference_text":  ref_text.strip(),
     }
@@ -1748,46 +1372,6 @@ def tab_results(cfg: Dict[str, Any]):
                     mime="text/plain", key=f"dl_{r.engine}", use_container_width=True,
                 )
 
-    # ── AI Analysis ─────────────────────────────────────────────────────────────────
-    if ok_results and cfg.get("gemini_key"):
-        st.markdown("#### 🤖 AI Analysis")
-        st.caption("Powered by Gemini — grammar correction, translation, summary, keywords, sentiment & entities.")
-        analysis_engine = st.selectbox(
-            "Analyze transcript from:", [r.engine for r in ok_results], key="analysis_engine_sel"
-        )
-        if st.button("🧠 Run AI Analysis", use_container_width=True, key="run_ai_analysis"):
-            target = next((r for r in ok_results if r.engine == analysis_engine), None)
-            if target:
-                with st.spinner("Analyzing transcript with Gemini…"):
-                    analysis = run_ai_analysis(target.transcript, cfg["gemini_key"], cfg["lang_label"])
-                if analysis:
-                    st.session_state["last_analysis"] = analysis
-                    st.session_state["last_analysis_engine"] = analysis_engine
-                else:
-                    st.warning("AI Analysis unavailable (Gemini key missing or quota exceeded).")
-
-        if st.session_state.get("last_analysis"):
-            analysis = st.session_state["last_analysis"]
-            eng_name = st.session_state.get("last_analysis_engine", "")
-            st.markdown(f"**Analysis of:** `{eng_name}`")
-            ai_cols = st.columns(2)
-            fields = [
-                ("grammar",     "✏️ Grammar Corrected"),
-                ("translation", "🌐 English Translation"),
-                ("summary",     "📋 Summary"),
-                ("keywords",    "🔑 Keywords"),
-                ("sentiment",   "💬 Sentiment"),
-                ("entities",    "🏷️ Named Entities"),
-            ]
-            for i, (key, label) in enumerate(fields):
-                with ai_cols[i % 2]:
-                    val = analysis.get(key, "—")
-                    st.markdown(
-                        f'<div class="ai-box"><div class="ai-label">{label}</div>{val}</div>',
-                        unsafe_allow_html=True)
-    elif ok_results and not cfg.get("gemini_key"):
-        st.info("💡 Add a **Gemini API key** in the sidebar to enable AI Analysis (grammar, translation, summary, sentiment, entities).")
-
     # ── Model Information Table ──────────────────────────────────────────────────────
     with st.expander("ℹ️ Model Information & Comparison"):
         model_df = pd.DataFrame(MODEL_INFO)
@@ -1901,8 +1485,8 @@ def main():
     st.markdown('<div class="lab-title">🎙️ ASR Intelligence Lab Pro</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="lab-subtitle">'
-        "Benchmark Whisper · Whisper-Turbo · Faster-Whisper · Sarvam AI · Shrutam-2 · "
-        "Gemini · IndicConformer · IndicWav2Vec — live captions, AI analysis, PDF reports &amp; rankings."
+        "Benchmark Whisper · Faster-Whisper · Sarvam AI · Wav2Vec2-XLSR-53 · SeamlessM4T-v2 — "
+        "live captions, PDF reports &amp; rankings."
         "</div>",
         unsafe_allow_html=True,
     )
