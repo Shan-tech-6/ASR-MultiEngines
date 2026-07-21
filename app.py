@@ -1,14 +1,14 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════════════╗
-║               ASR INTELLIGENCE LAB PRO  — Benchmarking Platform                    ║
-║                    Production-Ready · Streamlit Cloud Safe                          ║
+║               ASR INTELLIGENCE LAB PRO  — Benchmarking Platform                    
+║                    Production-Ready · Streamlit Cloud Safe                          
 ╠══════════════════════════════════════════════════════════════════════════════════════╣
-║  Engines   : Whisper · Faster-Whisper · Sarvam AI · Wav2Vec2-XLSR-53             ║
-║              SeamlessM4T-v2                                                       ║
-║  Mic       : streamlit_mic_recorder  (no sounddevice / no ALSA)                    ║
-║  TTS       : gTTS                                                                   ║
-║  Metrics   : Latency · RTF · WER · CER · Accuracy · Rankings                      ║
-║  Extras    : PDF Report · Audio Preprocessing · Radar Charts                       ║
+║  Engines   : Whisper · Faster-Whisper · Sarvam AI · Wav2Vec2-XLSR-53             
+║              SeamlessM4T-v2                                                       
+║  Mic       : streamlit_mic_recorder  (no sounddevice / no ALSA)                    
+║  TTS       : gTTS                                                                   
+║  Metrics   : Latency · RTF · WER · CER · Accuracy · Rankings                      
+║  Extras    : PDF Report · Audio Preprocessing · Radar Charts                       
 ╚══════════════════════════════════════════════════════════════════════════════════════╝
 """
 
