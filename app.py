@@ -123,6 +123,9 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════════════
 SARVAM_API_URL     = "https://api.sarvam.ai/speech-to-text"
 WAV2VEC2_BASE_ID   = "facebook/wav2vec2-large-xlsr-53"  # pretrained backbone (no CTC head)
+# Overridable via env var so a smaller checkpoint (e.g. "facebook/hf-seamless-m4t-medium",
+# ~2GB) can be swapped in on memory-constrained hosts without touching code.
+SEAMLESS_MODEL_ID  = os.environ.get("SEAMLESS_MODEL_ID", "facebook/seamless-m4t-v2-large")
 # facebook/wav2vec2-large-xlsr-53 ships with NO vocabulary/CTC head of its own —
 # HuggingFace's own model card says it "should be fine-tuned on a downstream task"
 # before it can transcribe anything. These are verified, publicly available
@@ -141,7 +144,6 @@ WAV2VEC2_LANG_MODEL_MAP = {
     "pt": "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese",
 }
 WAV2VEC2_DEFAULT_MODEL = WAV2VEC2_LANG_MODEL_MAP["en"]
-SEAMLESS_MODEL_ID  = "facebook/seamless-m4t-v2-large"
 SARVAM_MAX_SECS    = 30.0
 LOG_FILE           = "asr_lab_pro_logs.xlsx"
 LIVE_CAPTION_LIMIT = 5
@@ -408,10 +410,27 @@ def get_seamless_m4t_v2():
             return processor, model
         except Exception as e:
             last_err = e
-    raise RuntimeError(
-        "Failed to load SeamlessM4T-v2-Large even after a forced re-download "
-        f"(possibly a version mismatch in sentencepiece/protobuf): {last_err}"
-    )
+
+    err_text = str(last_err)
+    if "parsing" in err_text.lower() or "tokenizer.model" in err_text.lower():
+        hint = (
+            "This persists after a forced re-download, so it isn't a corrupted "
+            "file — it's almost certainly a missing/incompatible `protobuf` or "
+            "`sentencepiece` install (pin protobuf>=3.20,<5 and sentencepiece>=0.1.99 "
+            "in requirements.txt, then reboot the app), or a `transformers` version "
+            "too old to know this model's tokenizer format."
+        )
+    elif "memory" in err_text.lower() or "killed" in err_text.lower() or "oom" in err_text.lower():
+        hint = (
+            "This looks like an out-of-memory failure — SeamlessM4T-v2-Large is a "
+            "~2.3B parameter, ~9GB model, and free-tier hosting (e.g. Streamlit "
+            "Community Cloud's ~1GB RAM) cannot fit it. Run locally instead, or set "
+            "the SEAMLESS_MODEL_ID env var to 'facebook/hf-seamless-m4t-medium'."
+        )
+    else:
+        hint = "Check disk space, RAM, and that protobuf + sentencepiece are installed."
+
+    raise RuntimeError(f"Failed to load SeamlessM4T-v2-Large: {hint} | Raw error: {err_text[:200]}")
 
 
 def _load_audio_array(path: str, target_sr: int = TARGET_SR):
